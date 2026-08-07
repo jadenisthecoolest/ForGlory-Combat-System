@@ -1,5 +1,6 @@
 -- Connected Discord-GitHub
 
+-- This is essentially For Honor's combat system.
 --[[
 	CombatClient
 	Input, guard mode and presentation. Decides nothing about damage or state,
@@ -10,7 +11,7 @@
 		R or MMB     toggle guard mode (lock on)
 		Tab          cycle lock on target
 		mouse move   pick stance while in guard mode
-		Z / X / C    force Left / Top / Right stance (1 / 2 / 3 also work, but
+		Z / X / C    force Left / Top / Right stance (1 / 2 / 3 also work for testing purposes, but
 		             those are Roblox hotbar keys and can be eaten by the backpack)
 		scroll       switch lock on target: up for left, down for right
 		Q            sideways dash, side taken from your movement input
@@ -53,10 +54,7 @@ local CombatFX = Remotes:WaitForChild("CombatFX")
 local A = Config.Attr
 local player = Players.LocalPlayer
 
-----------------------------------------------------------------------
--- Local state
-----------------------------------------------------------------------
-
+-- local state
 local character: Model? = nil
 local humanoid: Humanoid? = nil
 local root: BasePart? = nil
@@ -65,16 +63,11 @@ local guarding = false
 local stick = Vector2.zero
 local guardHeld = false
 
--- What the player has ASKED for. The server owns the real value; this is only
--- the request, and reconcileStance keeps pushing until the two agree.
+-- what we've asked for, not what's live -- server owns the real value
 local desiredStance = Config.DefaultStance
 local lastStanceSend = 0
 local stancePendingSince = 0
 local lastSwitchAt = 0
-
-----------------------------------------------------------------------
--- Keybind matching
-----------------------------------------------------------------------
 
 local function matches(input: InputObject, binds: { any }): boolean
 	for _, bind in ipairs(binds) do
@@ -89,9 +82,7 @@ local function matches(input: InputObject, binds: { any }): boolean
 	return false
 end
 
-----------------------------------------------------------------------
--- Stance
-----------------------------------------------------------------------
+-- stance selection / reconciliation with the server
 
 local function serverStance(): string
 	local s = character and character:GetAttribute(A.Stance)
@@ -99,13 +90,10 @@ local function serverStance(): string
 end
 
 --[[
-	Ask for a stance. Nothing is assumed to have taken effect.
-
-	The server refuses stance changes mid swing and rate limits them, and a
-	refusal changes no attribute, so a fire and forget request could vanish
-	silently. The client would still believe it had switched, and every later
-	flick toward that stance got skipped as redundant, leaving you guarding the
-	wrong way until you happened to flick somewhere else entirely.
+	Server refuses stance changes mid swing and rate limits them, and a refusal
+	doesn't touch the attribute -- so a fire-and-forget request could vanish
+	silently and the client would think it switched when it didn't. Learned
+	that one the hard way (flicking to a stance that never took, over and over).
 ]]
 local function requestStance(newStance: string)
 	if not Config.isStance(newStance) then return end
@@ -115,20 +103,17 @@ local function requestStance(newStance: string)
 		stancePendingSince = os.clock()
 	end
 	desiredStance = newStance
-	-- Deliberately NOT setting the white marker here. White means the stance is
-	-- actually live; until the server confirms, reconcileStance shows it greyed.
+	-- deliberately NOT setting the white marker here -- white means live
 	lastStanceSend = 0 -- go out on the next reconcile without waiting
 end
 
--- Committed to a swing, so the guard cannot move yet and a request is queued
+-- committed to a swing, so the guard can't move yet and a request just queues
 local function stanceLockedLocally(): boolean
 	local s = character and character:GetAttribute(A.State)
 	return s == "Active" or s == "Recovery" or s == "Stunned" or s == "Parried"
 end
 
--- Runs every frame. Pushes the request until the server agrees, then gives up
--- and adopts the server's answer rather than letting the HUD lie about which
--- way you are actually guarding.
+-- pushes the stance request every frame until the server agrees, then gives up
 local function reconcileStance()
 	local actual = serverStance()
 	if actual == desiredStance then
@@ -136,14 +121,13 @@ local function reconcileStance()
 		return
 	end
 
-	-- Asked for but not live yet: show it greyed out until the server adopts it
+	-- asked for but not live yet: show it greyed out until the server adopts it
 	StanceHUD.setQueued(desiredStance)
 
 	local t = os.clock()
 
-	-- The give-up timer does not run while you are mid swing. The request is
-	-- legitimately waiting in the server's queue, not lost, and the swing can
-	-- easily outlast ConfirmTimeout.
+	-- don't give up mid-swing -- the request is just queued, not lost, and a
+	-- swing can easily outlast ConfirmTimeout
 	if not stanceLockedLocally() and t - stancePendingSince > Config.Stance.ConfirmTimeout then
 		desiredStance = actual
 		StanceHUD.setQueued(nil)
@@ -155,19 +139,12 @@ local function reconcileStance()
 	SetStance:FireServer(desiredStance)
 end
 
---[[
-	Mouse delta feeds a virtual stick. Crossing the deadzone picks a stance and
-	resets the stick, so every flick is exactly one independent decision.
-]]
---[[
-	Scroll wheel switches lock on target: up goes left, down goes right.
+-- mouse delta feeds a virtual stick; crossing the deadzone picks a stance
+-- and resets it, so every flick is one decision
 
-	The wheel rather than a mouse flick, because the mouse is already the stance
-	input. Telling the two apart by force alone meant a fast stance change could
-	be misread as a target switch, and the wheel has no other job while locked
-	on. This is what lets a fight involve more than one opponent without
-	dropping guard and re-acquiring.
-]]
+-- scroll wheel switches target instead of the mouse, since the mouse is
+-- already busy being the stance input -- otherwise a fast stance change
+-- could get misread as a target switch
 local function switchTarget(screenSign: number)
 	if not guarding or not GuardCamera.target or not root then return end
 	if os.clock() - lastSwitchAt < Config.LockOn.SwitchCooldown then return end
@@ -183,8 +160,8 @@ end
 local SCROLL_ACTION = "CombatTargetScroll"
 
 local function onScroll(_, state, input)
-	-- Sunk unconditionally while bound, so the default camera does not also
-	-- zoom underneath the guard camera and leave you zoomed oddly on release
+	-- sunk unconditionally while bound, so the default camera doesn't also
+	-- zoom underneath the guard camera
 	if state == Enum.UserInputState.Change and input.Position.Z ~= 0 then
 		switchTarget(input.Position.Z > 0 and -1 or 1)
 	end
@@ -194,8 +171,7 @@ end
 local function stepStanceStick(dt: number)
 	local delta = UserInputService:GetMouseDelta()
 
-	-- Bleed off only while the mouse is resting, so a slow steady drag still
-	-- accumulates instead of plateauing under the deadzone
+	-- only bleeds off while the mouse is resting, otherwise a slow drag never builds up
 	if delta.Magnitude < Config.Stance.IdleThreshold then
 		stick *= math.exp(-Config.Stance.Decay * dt)
 	end
@@ -207,7 +183,7 @@ local function stepStanceStick(dt: number)
 	end
 	if stick.Magnitude < Config.Stance.Deadzone then return end
 
-	-- Screen space Y grows downward, so up is -Y
+	-- screen space Y grows downward, so up is -Y
 	local angle = math.deg(math.atan2(stick.X, -stick.Y))
 
 	local picked
@@ -219,16 +195,13 @@ local function stepStanceStick(dt: number)
 		picked = "Left"
 	end
 
-	-- Reset on EVERY decision, including one that lands on the stance you are
-	-- already in. Leaving it charged meant a reversal had to unwind that charge
-	-- before it could cross the deadzone the other way.
+	-- reset even landing back on the same stance, otherwise a reversal has to
+	-- unwind the leftover charge first
 	stick = Vector2.zero
 	requestStance(picked)
 end
 
-----------------------------------------------------------------------
--- Guard mode
-----------------------------------------------------------------------
+-- guard mode (lock on)
 
 local function isDrawn(): boolean
 	return character ~= nil and character:GetAttribute(A.WeaponDrawn) == true
@@ -300,9 +273,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		end
 
 	elseif matches(input, K.Dash) then
-		-- Side is taken from movement input in the character's OWN frame, so
-		-- holding left while circling a target dashes to your left rather than
-		-- to the camera's
+		-- side comes from movement input in the character's own frame, so
+		-- circling left while locked on still dashes left, not toward the camera
 		if humanoid and root then
 			local move = humanoid.MoveDirection
 			local side = Config.Dash.NeutralDirection
@@ -317,8 +289,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
 
 	elseif matches(input, K.Grip) then
-		-- One key for both halves of the chain: grabs a downed body, and
-		-- finishes them if you are already holding one
+		-- same key grips a downed body and finishes them once you're carrying one
 		RequestGrip:FireServer()
 
 	elseif matches(input, K.Light) then
@@ -348,14 +319,11 @@ end)
 ----------------------------------------------------------------------
 -- Dash movement
 --
--- Performed here rather than on the server because the owning client is the
--- only side whose physics writes actually stick. A server side push on a
--- player character is overwritten by the owner every frame, which is why the
--- character previously did not move at all.
---
--- Velocity is reasserted every frame instead of applied once, so the
--- Humanoid's own controller cannot brake it away mid dash. Y is preserved so
--- gravity still applies and you can be dashed off a ledge.
+-- Client-side, not server, because the owning client's physics writes are
+-- the only ones that stick -- a server push on a player character gets
+-- overwritten by the owner every frame. Velocity gets reasserted every frame
+-- (not applied once) so the Humanoid controller can't brake it away mid-dash.
+-- Y is left alone so gravity still works and you can dash off a ledge.
 ----------------------------------------------------------------------
 
 RequestDash.OnClientEvent:Connect(function(dir: string)
@@ -367,8 +335,7 @@ RequestDash.OnClientEvent:Connect(function(dir: string)
 	task.spawn(function()
 		while os.clock() < finish do
 			if not root or not root.Parent or not humanoid or humanoid.Health <= 0 then return end
-			-- Getting clipped during the vulnerable startup or tail cancels the
-			-- dash, so a stunned character does not keep sliding
+			-- getting hit during the vulnerable startup/tail cancels the dash
 			local state = character and character:GetAttribute(A.State)
 			if state == "Stunned" or state == "Parried" then return end
 			local side = root.CFrame.RightVector * sign
@@ -398,14 +365,9 @@ local FX_COLORS = {
 local VFXFolder = ReplicatedStorage:FindFirstChild(Config.VFX.Folder)
 local SoundFolder = ReplicatedStorage:FindFirstChild(Config.Sound.Folder)
 
---[[
-	Plays a combat sound at a world position.
-
-	A fresh Sound per hit rather than reusing one instance, because two clashes
-	can overlap and restarting a shared Sound would cut the first one off. The
-	pitch jitter matters more than it sounds like it should: without it every
-	impact is bit for bit identical and the fight reads as a loop.
-]]
+-- fresh Sound per hit instead of reusing one -- two clashes can overlap, and
+-- restarting a shared Sound cuts the first one off. Pitch jitter matters more
+-- than it sounds like it should; without it every hit is bit-identical and reads as a loop.
 local function playSound(slot: string?, position: Vector3?)
 	if not slot or not SoundFolder then return end
 	local template = SoundFolder:FindFirstChild(slot)
@@ -437,22 +399,13 @@ local function playSound(slot: string?, position: Vector3?)
 	sound.Ended:Connect(function()
 		if holder ~= SoundService then holder:Destroy() else sound:Destroy() end
 	end)
-	-- Safety net in case Ended never fires (stream failure, moderated asset)
+	-- safety net in case Ended never fires (stream failure, moderated asset)
 	Debris:AddItem(holder ~= SoundService and holder or sound, 6)
 end
 
---[[
-	Fires every emitter in a template at its OWN steady state count.
-
-	Emitters in a single effect need very different particle counts, and some
-	are authored so faint that one particle is only a few percent opaque and
-	only reads once a dozen are stacked. A flat Emit number makes exactly those
-	layers disappear while the opaque ones still show, which looks like Emit
-	being broken. Rate * Lifetime is what each emitter maintains while Enabled,
-	so this reproduces the authored look as a one shot.
-
-	Returns how long the effect needs to live out.
-]]
+-- fires each emitter at its own steady-state count (Rate * Lifetime) instead
+-- of a flat number -- a flat Emit makes the faint, many-particle layers
+-- vanish while the opaque ones still show up fine. returns how long to keep it alive.
 local function burstEmitters(root: Instance): number
 	local longest = 0
 	for _, e in ipairs(root:GetDescendants()) do
@@ -461,7 +414,7 @@ local function burstEmitters(root: Instance): number
 			e:Emit(math.max(1, math.ceil(e.Rate * avgLife * Config.VFX.BurstMultiplier)))
 			longest = math.max(longest, e.Lifetime.Max)
 		elseif e:IsA("Beam") or e:IsA("Trail") then
-			-- These have no Emit, so they are flashed on and off instead
+			-- these have no Emit, so they're flashed on and off instead
 			e.Enabled = true
 			task.delay(0.12, function() e.Enabled = false end)
 			longest = math.max(longest, 0.3)
@@ -470,15 +423,8 @@ local function burstEmitters(root: Instance): number
 	return longest
 end
 
---[[
-	Shrinks every emitter in a template by a uniform factor.
-
-	Size, Speed and Acceleration all scale together. Scaling size alone would
-	leave the particles travelling their original distance, so a shrunk burst
-	would read as a thin hollow ring instead of a smaller version of itself.
-
-	Done once per template at startup and cached, rather than on every spawn.
-]]
+-- shrinks size, speed AND acceleration together -- size alone leaves the
+-- particles travelling their original distance, so it'd read as a thin ring
 local function scaleTemplate(template: Instance, scale: number)
 	if scale == 1 then return end
 	for _, e in ipairs(template:GetDescendants()) do
@@ -494,19 +440,6 @@ local function scaleTemplate(template: Instance, scale: number)
 	end
 end
 
---[[
-	Forces a template into the shape a one shot needs, whatever it was authored as.
-
-	An effect built to run continuously in the editor has Enabled emitters, and
-	some are left unanchored. Dropped into the world as a hit effect that reads
-	as the emitter streaming forever instead of bursting once, the part falling
-	through the floor and dragging its particles with it, and -- the confusing
-	part -- the Emit button appearing to do nothing, because the burst is lost
-	inside a stream that was already running.
-
-	Done here rather than by hand on each part so that any effect dropped into
-	CombatVFX works as a one shot without having to remember the convention.
-]]
 local function normaliseTemplate(template: Instance)
 	for _, d in ipairs(template:GetDescendants()) do
 		if d:IsA("ParticleEmitter") then
@@ -528,7 +461,7 @@ local function normaliseTemplate(template: Instance)
 	end
 end
 
--- Templates are prepared once, so the scaling cost is not paid per hit
+-- templates are prepared once, so the scaling cost isn't paid per hit
 local preparedTemplates: { [string]: Instance } = {}
 local function getTemplate(name: string): Instance?
 	if preparedTemplates[name] ~= nil then
@@ -546,7 +479,7 @@ local function getTemplate(name: string): Instance?
 	return prepared
 end
 
--- Returns true if a template existed and was played
+-- returns true if a template existed and was played
 local function playTemplate(kind: string, position: Vector3): boolean
 	local name = Config.VFX.Templates[kind]
 	if not name or name == "" or not VFXFolder then return false end
@@ -593,29 +526,26 @@ CombatFX.OnClientEvent:Connect(function(fxCharacter: Model, kind: string, dir: s
 	if not fxCharacter then return end
 
 	if position then
-		-- Art if there is any for this kind, otherwise the built in spark
+		-- art if there is any for this kind, otherwise the built-in spark
 		if not playTemplate(kind, position) and FX_COLORS[kind] then
 			spark(position, FX_COLORS[kind])
 		end
 	end
 
-	-- Impacts play at the contact point; equip and the like play on the
-	-- character, since they carry no position
 	local slot = Config.SoundForFX[kind]
 	if slot then
+		-- impacts play at the contact point; equip/unequip play on the character since they carry no position
 		local root = fxCharacter:FindFirstChild("HumanoidRootPart")
 		playSound(slot, position or (root and root.Position))
 	end
 
-	-- Dust is pulsed along the path rather than emitted once, so the dash
-	-- leaves a trail of puffs at the feet instead of one cloud where it began
 	if kind == "Dash" then
+		-- pulsed along the path instead of emitted once, so it leaves a trail of puffs
 		task.spawn(function()
 			local cfg = Config.Dash
 			local finish = os.clock() + cfg.Duration
 			while os.clock() < finish and fxCharacter.Parent do
-				-- Bounding box bottom is rig agnostic, unlike guessing from
-				-- HipHeight which differs between R6 and R15
+				-- bounding box bottom works for both R6 and R15; HipHeight doesn't
 				local ok, cf, size = pcall(function()
 					return fxCharacter:GetBoundingBox()
 				end)
@@ -631,9 +561,8 @@ CombatFX.OnClientEvent:Connect(function(fxCharacter: Model, kind: string, dir: s
 		end)
 	end
 
-	-- Swings are announced separately so the whoosh lands on the swing, not
-	-- on the contact
 	if kind == "Swing" then
+		-- separate from the hit sound so the whoosh lands on the swing, not the contact
 		local atkType = fxCharacter:GetAttribute(A.AttackType)
 		local root = fxCharacter:FindFirstChild("HumanoidRootPart")
 		playSound(atkType == "Heavy" and "SwingHeavy" or "SwingLight", root and root.Position)
@@ -658,10 +587,8 @@ CombatFX.OnClientEvent:Connect(function(fxCharacter: Model, kind: string, dir: s
 		StanceHUD.pulse(serverStance(), "Incoming", 0.18)
 	end
 
-	-- "Dodge" is fired by the server only when a dash's i-frames actually ate
-	-- an attack, never when one simply missed on range, so this is the single
-	-- place the white flash and the ghost trail can come from. Both show for
-	-- everyone; the HUD pulse is only for whoever pulled it off.
+	-- server only fires "Dodge" when the i-frames actually ate a hit, never on a
+	-- plain whiff -- so this is the one place the flash + trail come from
 	if kind == "Dodge" then
 		DashVisuals.dodge(fxCharacter)
 		if fxCharacter == character then
@@ -669,10 +596,6 @@ CombatFX.OnClientEvent:Connect(function(fxCharacter: Model, kind: string, dir: s
 		end
 	end
 end)
-
-----------------------------------------------------------------------
--- Character binding
-----------------------------------------------------------------------
 
 local function onCharacter(newCharacter: Model)
 	exitGuard()
@@ -686,11 +609,10 @@ local function onCharacter(newCharacter: Model)
 	lastStanceSend = 0
 	stick = Vector2.zero
 
-	-- StanceHUD.bind already follows the replicated stance attribute, which is
-	-- the single source of truth for what the HUD shows
+	-- StanceHUD.bind follows the replicated stance attribute directly
 	StanceHUD.bind(newCharacter)
 
-	-- Sheathing always drops guard; drawing offers it
+	-- sheathing always drops guard; drawing offers it
 	newCharacter:GetAttributeChangedSignal(A.WeaponDrawn):Connect(function()
 		if newCharacter:GetAttribute(A.WeaponDrawn) then
 			enterGuard()
@@ -701,10 +623,6 @@ local function onCharacter(newCharacter: Model)
 
 	humanoid.Died:Connect(exitGuard)
 end
-
-----------------------------------------------------------------------
--- Per frame
-----------------------------------------------------------------------
 
 RunService.RenderStepped:Connect(function(dt)
 	if not character or not character.Parent or not root or not humanoid then return end
@@ -717,7 +635,7 @@ RunService.RenderStepped:Connect(function(dt)
 		if not isDrawn() then
 			exitGuard()
 		elseif not GuardCamera.validate(root) then
-			-- Target died or ran off, grab the next one or drop guard
+			-- target died or ran off, grab the next one or drop guard
 			local nextTarget = GuardCamera.acquire(root)
 			if nextTarget then
 				GuardCamera.target = nextTarget
@@ -739,15 +657,10 @@ RunService.RenderStepped:Connect(function(dt)
 		GuardCamera.step(dt, character, root, humanoid)
 	end
 
-	-- Runs in and out of guard mode, since 1/2/3 work either way
-	reconcileStance()
+	reconcileStance() -- runs in and out of guard mode, since 1/2/3 work either way
 
 	EnemyTags.update(GuardCamera.target)
 end)
-
-----------------------------------------------------------------------
--- Boot
-----------------------------------------------------------------------
 
 StanceHUD.init()
 EnemyTags.init()
@@ -757,4 +670,4 @@ if player.Character then
 	onCharacter(player.Character)
 end
 
-print("[Combat] CombatClient ready")
+print("[Combat] CombatClient all good mud")
