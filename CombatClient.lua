@@ -1,5 +1,6 @@
 -- Connected Discord-GitHub
 
+-- This is essentially For Honor's combat system.
 --[[
 	CombatClient
 	Input, guard mode and presentation. Decides nothing about damage or state,
@@ -10,7 +11,7 @@
 		R or MMB     toggle guard mode (lock on)
 		Tab          cycle lock on target
 		mouse move   pick stance while in guard mode
-		Z / X / C    force Left / Top / Right stance (1 / 2 / 3 also work, but
+		Z / X / C    force Left / Top / Right stance (1 / 2 / 3 also work for testing purposes, but
 		             those are Roblox hotbar keys and can be eaten by the backpack)
 		scroll       switch lock on target: up for left, down for right
 		Q            sideways dash, side taken from your movement input
@@ -494,19 +495,6 @@ local function scaleTemplate(template: Instance, scale: number)
 	end
 end
 
---[[
-	Forces a template into the shape a one shot needs, whatever it was authored as.
-
-	An effect built to run continuously in the editor has Enabled emitters, and
-	some are left unanchored. Dropped into the world as a hit effect that reads
-	as the emitter streaming forever instead of bursting once, the part falling
-	through the floor and dragging its particles with it, and -- the confusing
-	part -- the Emit button appearing to do nothing, because the burst is lost
-	inside a stream that was already running.
-
-	Done here rather than by hand on each part so that any effect dropped into
-	CombatVFX works as a one shot without having to remember the convention.
-]]
 local function normaliseTemplate(template: Instance)
 	for _, d in ipairs(template:GetDescendants()) do
 		if d:IsA("ParticleEmitter") then
@@ -757,4 +745,4 @@ if player.Character then
 	onCharacter(player.Character)
 end
 
-print("[Combat] CombatClient ready")
+print("[Combat] CombatClient all good mud")
